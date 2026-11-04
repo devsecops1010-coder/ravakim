@@ -229,7 +229,7 @@ img{display:block;max-width:100%}
 .toast{background:var(--raised);border:1px solid var(--ring);border-radius:14px;padding:12px 16px;max-width:92%;
   box-shadow:0 8px 30px rgba(0,0,0,.5);animation:toastin .3s both;font-size:14px;display:flex;gap:10px;align-items:center}
 @keyframes toastin{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:none}}
-.input{width:100%;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px;color:#fff;font-size:15px;font-family:inherit;margin-bottom:10px;outline:none}
+.input{width:100%;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px;color:#fff;font-size:16px;font-family:inherit;margin-bottom:10px;outline:none}
 .input:focus{border-color:var(--gold)}
 label.fld{display:block;font-size:12px;color:var(--txt2);margin:0 2px 4px}
 
@@ -345,6 +345,7 @@ label.fld{display:block;font-size:12px;color:var(--txt2);margin:0 2px 4px}
         <div class="sparkle">✨</div>
       </div>
       <div class="home-hello">יאללה, <span id="homeName" style="color:var(--gold)">חי</span>.</div>
+      <div id="cdLabel" style="position:relative;z-index:2;color:var(--gold);font-size:13px;font-weight:700;margin:-6px 0 8px;letter-spacing:.02em">עד הטיסה ✈️</div>
       <div class="countdown" id="countdown">
         <div class="cd-box"><div class="v" id="cd-d">0</div><div class="l">ימים</div></div>
         <div class="cd-box"><div class="v" id="cd-h">0</div><div class="l">שעות</div></div>
@@ -547,6 +548,7 @@ const RATE=0.148; // 1 HUF ≈ 0.0085? placeholder: 1 ILS ≈ 102 HUF → we sto
 const HUF_PER_ILS=102;
 const FLIGHT_DEP=new Date('2026-11-04T06:40:00+02:00');
 const WEDDING=new Date('2026-12-21T19:00:00+02:00');
+const TRIP_END=new Date('2026-11-09T00:00:00+02:00');
 const DAYS=[
   {d:'04.11',wd:'רביעי'},{d:'05.11',wd:'חמישי'},{d:'06.11',wd:'שישי'},{d:'07.11',wd:'שבת'},{d:'08.11',wd:'ראשון'}
 ];
@@ -706,7 +708,11 @@ function renderHome(){
 }
 let lastCD={};
 function tickCountdown(){
-  const now=Date.now();let diff=Math.max(0,FLIGHT_DEP-now);
+  const now=Date.now();
+  // before takeoff → count to the flight; after → count to Chai's wedding
+  const toFlight=now<FLIGHT_DEP, onTrip=!toFlight&&now<TRIP_END;
+  let diff=Math.max(0,(toFlight?FLIGHT_DEP:WEDDING)-now);
+  const lb=$('#cdLabel');if(lb){const t=toFlight?'עד הטיסה ✈️':onTrip?'אנחנו בבודפשט! 🎉 · עד החתונה של חי':'עד החתונה של חי 💍';if(lb.textContent!==t)lb.textContent=t}
   const d=Math.floor(diff/864e5),h=Math.floor(diff/36e5)%24,m=Math.floor(diff/6e4)%60,s=Math.floor(diff/1e3)%60;
   const set=(id,v)=>{const e=$('#'+id);if(!e)return;const str=String(v).padStart(id==='cd-d'?1:2,'0');if(e.textContent!==str){e.textContent=str;e.classList.remove('flip');void e.offsetWidth;e.classList.add('flip')}};
   set('cd-d',d);set('cd-h',h);set('cd-m',m);set('cd-s',s);
