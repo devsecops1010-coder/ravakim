@@ -1,5 +1,5 @@
 // Chai's Ravakim — offline service worker
-const CACHE = 'ravakim-v1';
+const CACHE = 'ravakim-v2';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.png'];
 
 self.addEventListener('install', e => {
@@ -14,11 +14,23 @@ self.addEventListener('activate', e => {
   self.clients.claim();
 });
 
-// cache-first for same-origin, network fallback; network-first for Google Fonts
+// HTML/navigation: network-first (so updates show immediately, offline falls back to cache).
+// Other same-origin assets: cache-first. Cross-origin (fonts, Firebase): network-first.
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
-  if (url.origin === location.origin) {
+  const isDoc = e.request.mode === 'navigate' ||
+    (e.request.destination === 'document') ||
+    url.pathname.endsWith('/') || url.pathname.endsWith('.html');
+  if (url.origin === location.origin && isDoc) {
+    e.respondWith(
+      fetch(e.request).then(res => {
+        const copy = res.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
+        return res;
+      }).catch(() => caches.match(e.request).then(r => r || caches.match('./index.html')))
+    );
+  } else if (url.origin === location.origin) {
     e.respondWith(
       caches.match(e.request).then(r => r || fetch(e.request).then(res => {
         const copy = res.clone();
