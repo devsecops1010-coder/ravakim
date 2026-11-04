@@ -417,20 +417,57 @@ label.fld{display:block;font-size:12px;color:var(--txt2);margin:0 2px 4px}
 <div id="modal" onclick="if(event.target.id==='modal')closeModal()"><div class="modal-card" id="modalCard"></div></div>
 <div id="toast-wrap"></div>
 
+<!-- Firebase (compat build so the classic script below can use the global `firebase`) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script>
-/* ===================== DATA LAYER (swappable: localStorage → Firebase) ===================== */
+/* ===================== DATA LAYER (localStorage cache + Firestore realtime) =====================
+   Public API (read/write/update/on) is unchanged, so no screen below needed to change.
+   - read()  : synchronous, from the localStorage cache (works offline).
+   - write() : updates cache + notifies + pushes shared keys to Firestore.
+   - Firestore onSnapshot mirrors remote changes back into the cache and refreshes the screen.
+   Per-device keys (identity, UI toggles) stay local and never sync. */
+const FB_CONFIG={
+  apiKey:"AIzaSyBC3mvpnaMF-idW26lkkKpXyLo8ePE6apQ",
+  authDomain:"ravakim-budapest.firebaseapp.com",
+  projectId:"ravakim-budapest",
+  storageBucket:"ravakim-budapest.firebasestorage.app",
+  messagingSenderId:"864932417069",
+  appId:"1:864932417069:web:773c95c4c286874105f2a4"
+};
+const LOCAL_ONLY=['me','seenInstall','showCode']; // never leave this device
 const DB = (()=>{
-  const PFX='ravakim.';
-  const subs={};
-  function read(k,def){try{const v=localStorage.getItem(PFX+k);return v?JSON.parse(v):structuredClone(def)}catch(e){return structuredClone(def)}}
-  function write(k,val){try{localStorage.setItem(PFX+k,JSON.stringify(val))}catch(e){}; (subs[k]||[]).forEach(f=>f(val)); return val}
+  const PFX='ravakim.';const subs={};let fs=null;let refreshCb=null;
+  const shared=k=>!LOCAL_ONLY.includes(k);
+  function lget(k,def){try{const v=localStorage.getItem(PFX+k);return v?JSON.parse(v):structuredClone(def)}catch(e){return structuredClone(def)}}
+  function lset(k,val){try{localStorage.setItem(PFX+k,JSON.stringify(val))}catch(e){}}
+  function notify(k,val){(subs[k]||[]).forEach(f=>{try{f(val)}catch(_){}})}
+  function read(k,def){return lget(k,def)}
+  function write(k,val){
+    lset(k,val);notify(k,val);
+    if(fs&&shared(k)){try{fs.collection('state').doc(k).set({v:val}).catch(()=>{})}catch(_){}}
+    return val;
+  }
   function update(k,def,fn){const v=read(k,def);fn(v);return write(k,v)}
   function on(k,fn){(subs[k]=subs[k]||[]).push(fn)}
-  // storage event → cross-tab sync (stand-in for Firebase realtime)
-  window.addEventListener('storage',e=>{if(e.key&&e.key.startsWith(PFX)){const k=e.key.slice(PFX.length);try{(subs[k]||[]).forEach(f=>f(JSON.parse(e.newValue)))}catch(_){} }});
-  return {read,write,update,on};
-  /* To go realtime: replace read/write/on with Firestore doc get/set/onSnapshot.
-     Keys map to documents; same signatures, so screens below need no change. */
+  function setRefresh(fn){refreshCb=fn}
+  function initCloud(){
+    try{
+      firebase.initializeApp(FB_CONFIG);fs=firebase.firestore();
+      fs.collection('state').onSnapshot(snap=>{
+        let changed=false;
+        snap.docChanges().forEach(ch=>{
+          if(ch.type==='removed')return;
+          const k=ch.doc.id, data=ch.doc.data()||{}, val=data.v;
+          if(JSON.stringify(val)!==JSON.stringify(lget(k,null))){lset(k,val);notify(k,val);changed=true}
+        });
+        if(changed&&refreshCb)refreshCb();
+      },err=>console.warn('Firestore offline:',err&&err.code));
+    }catch(e){console.warn('No cloud sync:',e)}
+  }
+  // cross-tab fallback (same device, different tab)
+  window.addEventListener('storage',e=>{if(e.key&&e.key.startsWith(PFX)){const k=e.key.slice(PFX.length);try{notify(k,JSON.parse(e.newValue));if(refreshCb)refreshCb()}catch(_){} }});
+  return {read,write,update,on,initCloud,setRefresh};
 })();
 
 /* ===================== STATIC EVENT DATA ===================== */
@@ -528,6 +565,11 @@ function go(name){
   $('#actionbar').classList.toggle('hidden',!chrome||!ME);
   document.querySelectorAll('#tabbar button').forEach(b=>b.classList.toggle('active',b.dataset.t===name));
   window.scrollTo(0,0);
+  window._cur=name;
+  renderScreen(name);
+  setActionBar(name);
+}
+function renderScreen(name){
   if(name==='home')renderHome();
   if(name==='sched')renderSched();
   if(name==='map')renderMap();
@@ -536,7 +578,13 @@ function go(name){
   if(name==='check')renderCheck();
   if(name==='album')renderAlbum();
   if(name==='cur')calcCur();
-  setActionBar(name);
+}
+// re-render the current screen when realtime data arrives (skip input/modal screens)
+function refreshCurrent(){
+  const n=window._cur;
+  if(!n||['pick','install','cur'].includes(n))return;
+  if(document.getElementById('modal').classList.contains('show'))return;
+  renderScreen(n);
 }
 function setActionBar(name){
   const map={home:['נדנד לחבר','nudge'],sched:['הצבעות','votes'],map:['ניווט לדירה','navApt'],
@@ -822,6 +870,8 @@ function addCal(title,time){
 
 /* ===================== BOOT ===================== */
 function boot(){
+  DB.setRefresh(refreshCurrent);
+  DB.initCloud();
   renderPick();
   if(ME){applyIdentity();go('home')}else{go('pick')}
   tickCountdown();
