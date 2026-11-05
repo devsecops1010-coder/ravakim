@@ -519,10 +519,16 @@ const DB = (()=>{
     if(fs&&shared(k)){const ref=fs.collection('state').doc(k);
       fs.runTransaction(tx=>tx.get(ref).then(doc=>{const d=doc.exists?doc.data():null;const sv=d&&d.v!=null?d.v:structuredClone(def);fn(sv);tx.set(ref,{v:sv});return sv}))
         .then(sv=>{if(JSON.stringify(sv)!==JSON.stringify(lget(k,null))){lset(k,sv);notify(k,sv);if(refreshCb)refreshCb()}})
-        .catch(()=>{try{ref.set({v}).catch(()=>{})}catch(_){}});   // offline → plain write, queued by Firestore
+        .catch(err=>{if(err&&err.code==='permission-denied'){window.toast&&toast('השינוי נדחה','⚠️');return}
+          RETRYQ.push([k,def,fn]);if(window.toast)toast('אין חיבור, השינוי יישלח כשיחזור האינטרנט','📶')});   // retried as a transaction, never as an overwrite
     }
     return v;
   }
+  const RETRYQ=[];
+  function retryQueued(){if(!fs||!navigator.onLine)return;const q=RETRYQ.splice(0);q.forEach(([k,def,fn])=>{const ref=fs.collection('state').doc(k);
+    fs.runTransaction(tx=>tx.get(ref).then(doc=>{const d=doc.exists?doc.data():null;const sv=d&&d.v!=null?d.v:structuredClone(def);fn(sv);tx.set(ref,{v:sv});return sv}))
+      .then(sv=>{lset(k,sv);notify(k,sv);if(refreshCb)refreshCb()}).catch(()=>RETRYQ.push([k,def,fn]))})}
+  window.addEventListener('online',retryQueued);setInterval(retryQueued,30000);
   function on(k,fn){(subs[k]=subs[k]||[]).push(fn)}
   function setRefresh(fn){refreshCb=fn}
   function initCloud(){
@@ -628,6 +634,7 @@ const $=s=>document.querySelector(s);
 const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 function person(id){return PEOPLE.find(p=>p.id===id)}
 function avaHTML(p,crown){return `<div class="ava${crown&&p.groom?' crown':''}" style="background:linear-gradient(145deg,${p.c}44,#0d1526);border-color:${p.c}">${p.e?`<span class="emoji">${p.e}</span>`:p.name[0]}</div>`}
+function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function toast(msg,icon='🔔'){const w=$('#toast-wrap');const t=el('div','toast',`<span>${icon}</span><span>${msg}</span>`);w.appendChild(t);setTimeout(()=>{t.style.opacity=0;setTimeout(()=>t.remove(),300)},3200)}
 function closeModal(){$('#modal').classList.remove('show')}
 function modal(html){$('#modalCard').innerHTML=html;$('#modal').classList.add('show')}
@@ -724,7 +731,7 @@ function tickCountdown(){
   // before takeoff → count to the flight; after → count to Chai's wedding
   const toFlight=now<FLIGHT_DEP, onTrip=!toFlight&&now<TRIP_END;
   let diff=Math.max(0,(toFlight?FLIGHT_DEP:WEDDING)-now);
-  const lb=$('#cdLabel');if(lb){const t=toFlight?'עד הטיסה ✈️':onTrip?'אנחנו בבודפשט! 🎉 · עד החתונה של חי':'עד החתונה של חי 💍';if(lb.textContent!==t)lb.textContent=t}
+  const lb=$('#cdLabel');if(lb){const t=toFlight?'עד הטיסה ✈️':onTrip?'אנחנו בבודפשט! 🎉 · עד החתונה של חי':now>=WEDDING?'מזל טוב לחי! 💍🎉':'עד החתונה של חי 💍';if(lb.textContent!==t)lb.textContent=t}
   const d=Math.floor(diff/864e5),h=Math.floor(diff/36e5)%24,m=Math.floor(diff/6e4)%60,s=Math.floor(diff/1e3)%60;
   const set=(id,v)=>{const e=$('#'+id);if(!e)return;const str=String(v).padStart(id==='cd-d'?1:2,'0');if(e.textContent!==str){e.textContent=str;e.classList.remove('flip');void e.offsetWidth;e.classList.add('flip')}};
   set('cd-d',d);set('cd-h',h);set('cd-m',m);set('cd-s',s);
@@ -820,7 +827,7 @@ function renderMine(){
 function renderGroup(){
   renderLeaderboard();renderSettle();renderDrunk();renderSecret();
 }
-function checkPct(pid){const done=DB.read('check.'+pid,{});return Math.round(Object.values(done).filter(Boolean).length/CHK_TOTAL*100)}
+function checkPct(pid){const done=DB.read('check.'+pid,{});const g=person(pid)?.groom;let idx=0,tot=0,n=0;CHECKLIST.forEach(c=>{const skip=g&&c.cat.includes('רווקים');c.items.forEach(()=>{if(!skip){tot++;if(done[idx])n++}idx++})});return tot?Math.round(n/tot*100):0}
 function renderLeaderboard(){
   const lb=$('#leaderboard');lb.innerHTML='';
   const ranked=PEOPLE.map(p=>({p,pct:checkPct(p.id)})).sort((a,b)=>b.pct-a.pct);
@@ -888,7 +895,7 @@ function renderSecret(){
   if(isGroom)return;
   const items=CHECKLIST.find(c=>c.cat.includes('רווקים')).items;
   const done=DB.read('secret',{});
-  $('#secretBox').innerHTML=items.map((it,i)=>`<div class="chk${done[i]?' done':''}" onclick="DB.update('secret',{},d=>d[${i}]=!d[${i}]);renderSecret()">
+  $('#secretBox').innerHTML=items.map((it,i)=>`<div class="chk${done[i]?' done':''}" onclick="DB.update('secret',{},d=>{d[${i}]=${!done[i]}});renderSecret()">
     <div class="box">${done[i]?'✓':''}</div><div class="lbl">${it}</div></div>`).join('');
 }
 
@@ -896,7 +903,9 @@ function renderSecret(){
 function renderCheck(){
   const done=DB.read('check.'+ME,{});
   const box=$('#checklist');box.innerHTML='';let idx=0,totalDone=0;
+  const isGroom=person(ME)?.groom;
   CHECKLIST.forEach(cat=>{
+    if(isGroom&&cat.cat.includes('רווקים')){idx+=cat.items.length;return}   // the surprise stays a surprise
     const start=idx;const catItems=cat.items.length;
     const head=el('div','cat-head');
     const catDone=cat.items.filter((_,i)=>done[start+i]).length;totalDone+=catDone;
@@ -904,7 +913,7 @@ function renderCheck(){
     box.appendChild(head);
     cat.items.forEach((it)=>{const myIdx=idx;const d=done[myIdx];
       const row=el('div','chk'+(d?' done':''),`<div class="box">${d?'✓':''}</div><div class="lbl">${it}</div>`);
-      row.onclick=()=>{DB.update('check.'+ME,{},o=>o[myIdx]=!o[myIdx]);renderCheck()};
+      const nv=!d;row.onclick=()=>{DB.update('check.'+ME,{},o=>{o[myIdx]=nv});renderCheck()};
       box.appendChild(row);idx++});
   });
   $('#checkTotal').textContent=totalDone;
@@ -914,18 +923,31 @@ function renderCheck(){
 function renderAlbum(){
   const media=DB.read('album',[]);const grid=$('#albumGrid');grid.innerHTML='';
   grid.appendChild(el('div','cell','＋')).onclick=()=>$('#upl').click();
-  media.forEach((m,i)=>{const c=el('div','cell');
-    c.innerHTML=m.type.startsWith('video')?`<video src="${m.data}" muted></video>`:`<img src="${m.data}">`;
-    c.onclick=()=>modal(`${m.type.startsWith('video')?`<video src="${m.data}" controls style="width:100%;border-radius:12px"></video>`:`<img src="${m.data}" style="width:100%;border-radius:12px">`}<div class="hint" style="margin-top:8px">הועלה ע"י ${person(m.by)?.name||'מישהו'}</div><button class="btn block" style="margin-top:10px" onclick="closeModal()">סגור</button>`);
+  const okData=d=>/^data:(image|video)\/[\w+.-]+;base64,[A-Za-z0-9+/=]+$/.test(String(d||''));
+  media.forEach((m,i)=>{if(!m||!okData(m.data))return;const c=el('div','cell');const vid=String(m.type||m.data).includes('video');
+    const mk=full=>{const x=document.createElement(vid?'video':'img');x.src=m.data;if(vid){full?x.controls=true:x.muted=true}if(full)x.style.cssText='width:100%;border-radius:12px';return x};
+    c.appendChild(mk(false));
+    c.onclick=()=>{modal(`<div id="mediaBig"></div><div class="hint" style="margin-top:8px">הועלה ע"י ${esc(person(m.by)?.name||'מישהו')}</div><button class="btn block" style="margin-top:10px" onclick="closeModal()">סגור</button>`);const b=document.getElementById('mediaBig');if(b)b.appendChild(mk(true))};
     grid.appendChild(c)});
 }
-function addMedia(ev){
-  const files=[...ev.target.files];let count=0;
-  files.forEach(f=>{const r=new FileReader();r.onload=()=>{
-    DB.update('album',[],a=>a.unshift({type:f.type,data:r.result,by:ME,ts:Date.now()}));
-    if(++count===files.length){renderAlbum();toast(count+' נוספו לאלבום','📸')}
-  };r.readAsDataURL(f)});
-  ev.target.value='';
+/* phone photos are 3–7 MB; the whole album lives in ONE cloud doc (max 1 MB), so shrink every photo first */
+const shrinkImg=f=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>{const sc=Math.min(1,1024/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.round(i.width*sc);c.height=Math.round(i.height*sc);c.getContext('2d').drawImage(i,0,0,c.width,c.height);URL.revokeObjectURL(i.src);ok(c.toDataURL('image/jpeg',.6))};i.onerror=no;i.src=URL.createObjectURL(f)});
+const readURL=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f)});
+async function addMedia(ev){
+  const files=[...ev.target.files];ev.target.value='';let added=0,skipped=0;
+  for(const f of files){
+    let data;try{
+      if(f.type.startsWith('image')) data=await shrinkImg(f);
+      else if(f.type.startsWith('video')&&f.size<=600*1024) data=await readURL(f);
+      else {skipped++;continue}
+    }catch(e){skipped++;continue}
+    const size=JSON.stringify(DB.read('album',[])).length+data.length;
+    if(size>950*1024){skipped++;continue}   // would not fit in the shared album
+    DB.update('album',[],a=>a.unshift({type:f.type.startsWith('video')?f.type:'image/jpeg',data,by:ME,ts:Date.now()}));added++;
+  }
+  renderAlbum();
+  if(added)toast(added+' נוספו לאלבום','📸');
+  if(skipped)toast(skipped+' לא נוספו (וידאו ארוך מדי או שהאלבום מלא)','⚠️');
 }
 
 /* ===================== NUDGE ===================== */
@@ -944,8 +966,8 @@ DB.on('nudges',list=>{const last=list[list.length-1];if(last&&last.to===ME&&Date
 function nav(q){const u='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(q);window.open(u,'_blank')}
 function wa(num){window.open('https://wa.me/'+num.replace(/[^\d]/g,''),'_blank')}
 function addCal(title,time){
-  const dt='20261104T'+time.replace(':','')+'00';
-  const ics=`BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${title}\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
+  const [dd,mm]=curDay.split('.');const dt=`2026${mm}${dd}T${String(time).replace(':','')}00`;
+  const ics=`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//ravakim//HE\nBEGIN:VEVENT\nUID:${Date.now()}@ravakim\nDTSTAMP:${dt}\nSUMMARY:${title}\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
   const blob=new Blob([ics],{type:'text/calendar'});const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download=title+'.ics';a.click();toast('נוסף ליומן','📅');
 }
