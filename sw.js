@@ -1,5 +1,5 @@
 // Chai's Ravakim — offline service worker
-const CACHE = 'ravakim-v4';
+const CACHE = 'ravakim-v5';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.png'];
 
 self.addEventListener('install', e => {

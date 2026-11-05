@@ -513,7 +513,16 @@ const DB = (()=>{
     if(fs&&shared(k)){try{fs.collection('state').doc(k).set({v:val}).catch(()=>{})}catch(_){}}
     return val;
   }
-  function update(k,def,fn){const v=read(k,def);fn(v);return write(k,v)}
+  /* update = change relative to the LATEST cloud value (transaction), so two people adding at once never erase each other */
+  function update(k,def,fn){
+    const v=read(k,def);fn(v);lset(k,v);notify(k,v);
+    if(fs&&shared(k)){const ref=fs.collection('state').doc(k);
+      fs.runTransaction(tx=>tx.get(ref).then(doc=>{const d=doc.exists?doc.data():null;const sv=d&&d.v!=null?d.v:structuredClone(def);fn(sv);tx.set(ref,{v:sv});return sv}))
+        .then(sv=>{if(JSON.stringify(sv)!==JSON.stringify(lget(k,null))){lset(k,sv);notify(k,sv);if(refreshCb)refreshCb()}})
+        .catch(()=>{try{ref.set({v}).catch(()=>{})}catch(_){}});   // offline → plain write, queued by Firestore
+    }
+    return v;
+  }
   function on(k,fn){(subs[k]=subs[k]||[]).push(fn)}
   function setRefresh(fn){refreshCb=fn}
   function initCloud(){
@@ -530,6 +539,9 @@ const DB = (()=>{
       },err=>console.warn('Firestore offline:',err&&err.code));
     }catch(e){console.warn('No cloud sync:',e)}
   }
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&fs){
+    fs.collection('state').get({source:'server'}).then(qs=>{let ch=false;qs.forEach(doc=>{const k=doc.id,val=(doc.data()||{}).v;
+      if(JSON.stringify(val)!==JSON.stringify(lget(k,null))){lset(k,val);notify(k,val);ch=true}});if(ch&&refreshCb)refreshCb()}).catch(()=>{})}});
   // cross-tab fallback (same device, different tab)
   window.addEventListener('storage',e=>{if(e.key&&e.key.startsWith(PFX)){const k=e.key.slice(PFX.length);try{notify(k,JSON.parse(e.newValue));if(refreshCb)refreshCb()}catch(_){} }});
   return {read,write,update,on,initCloud,setRefresh};
